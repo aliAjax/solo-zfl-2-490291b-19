@@ -1,4 +1,5 @@
 import Header from '@/components/layout/Header';
+import StorageErrorBanner from '@/components/layout/StorageErrorBanner';
 import ListView from '@/components/list/ListView';
 import CompareView from '@/components/compare/CompareView';
 import StatsView from '@/components/stats/StatsView';
@@ -29,6 +30,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen flex flex-col">
+      <StorageErrorBanner />
       <Header />
 
       {showCompareBanner && (

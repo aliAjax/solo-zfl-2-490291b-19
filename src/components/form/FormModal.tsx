@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Save, FileText, Cpu, Keyboard as KeyboardIcon, Layers, Volume2 } from 'lucide-react';
+import { X, Save, FileText, Cpu, Keyboard as KeyboardIcon, Layers, Volume2, AlertTriangle } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import {
   PRESET_SOUND_TAGS,
@@ -57,6 +57,7 @@ export default function FormModal() {
 
   const [form, setForm] = useState<FormState>(emptyForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -88,6 +89,7 @@ export default function FormModal() {
         setForm({ ...emptyForm, purchaseDate: new Date().toISOString().slice(0, 10) });
       }
       setErrors({});
+      setSaveError(null);
     }
   }, [isOpen, editing]);
 
@@ -106,6 +108,7 @@ export default function FormModal() {
     if (errors[key as string]) {
       setErrors((e) => ({ ...e, [key as string]: '' }));
     }
+    if (saveError) setSaveError(null);
   };
 
   const validate = (): boolean => {
@@ -113,6 +116,7 @@ export default function FormModal() {
     if (!form.name.trim()) e.name = '请输入键盘名称';
     if (!form.switchName.trim()) e.switchName = '请填写轴体名称';
     if (!form.brand.trim()) e.brand = '请输入品牌';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(form.purchaseDate)) e.purchaseDate = '请选择有效的入手日期';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -120,10 +124,10 @@ export default function FormModal() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
-    if (editing) {
-      updateLog(editing.id, form);
-    } else {
-      createLog(form);
+    // 落盘成功 store 才会关窗；失败时保持打开并展示明确错误
+    const res = editing ? updateLog(editing.id, form) : createLog(form);
+    if (!res.ok) {
+      setSaveError(res.error ?? '保存失败，请重试');
     }
   };
 
@@ -421,6 +425,16 @@ export default function FormModal() {
               </div>
             </div>
           </Section>
+
+          {saveError && (
+            <div className="flex items-start gap-2 rounded-lg border border-wine-500/40 bg-wine-500/10 px-3 py-2.5">
+              <AlertTriangle className="h-4 w-4 text-wine-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs font-semibold text-wine-300">记录未能保存</p>
+                <p className="text-[11px] text-wine-200/80 mt-0.5 break-words">{saveError}</p>
+              </div>
+            </div>
+          )}
 
           <div className="sticky bottom-0 -mx-5 sm:-mx-6 -mb-5 sm:-mb-6 mt-2 flex items-center justify-end gap-3 px-5 sm:px-6 py-4 border-t border-ink-700/60 bg-gradient-to-t from-ink-800 via-ink-800/95 to-ink-800/80 backdrop-blur-sm rounded-b-2xl">
             <button type="button" onClick={closeFormModal} className="btn-ghost">

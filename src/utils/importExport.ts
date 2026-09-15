@@ -21,11 +21,23 @@ export interface ExportEnvelope {
   data: KeyboardLog[];
 }
 
+export interface ImportRejectItem {
+  /** 0-based 下标，界面展示时 +1 */
+  index: number;
+  reason: string;
+  id?: string;
+}
+
 export interface ImportParseResult {
+  /** 仅当整份文件全部记录校验通过时才非空，否则为空数组（整批拒绝，不允许落盘） */
   fileValidLogs: KeyboardLog[];
-  fileInvalidItems: Array<{ index: number; reason: string; raw: unknown }>;
+  /** 结构/语义非法的记录位置与原因 */
+  fileInvalidItems: ImportRejectItem[];
+  /** 文件内编号重复的记录位置（整份文件会因此被拒绝） */
   fileInternalDuplicates: Array<{ index: number; id: string; raw: unknown }>;
   totalParsed: number;
+  /** 整批是否被拒绝（存在非法记录或文件内重复编号） */
+  rejected: boolean;
   envelope?: ExportEnvelope;
 }
 
@@ -70,12 +82,35 @@ const REQUIRED_STRING_FIELDS: (keyof KeyboardLog)[] = [
   'updatedAt',
 ];
 
-const REQUIRED_NUMBER_FIELDS: (keyof KeyboardLog)[] = [
+const RATING_FIELDS: (keyof KeyboardLog)[] = [
   'overallRating',
   'reboundRating',
   'tactilityRating',
   'fatigueRating',
 ];
+
+const RATING_FIELD_LABELS: Record<string, string> = {
+  overallRating: '整体评分',
+  reboundRating: '回弹评分',
+  tactilityRating: '段落评分',
+  fatigueRating: '疲劳评分',
+};
+
+/**
+ * 校验 YYYY-MM-DD 是否为真实存在的日历日期（拒绝 2025-02-31、2025-13-01 等）。
+ * 回读后必须与输入完全一致，避免 Date 自动滚动到下一个月。
+ */
+function isValidCalendarDate(v: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const [y, m, d] = v.split('-').map(Number);
+  if (m < 1 || m > 12 || d < 1) return false;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() === m - 1 &&
+    dt.getUTCDate() === d
+  );
+}
 
 function isValidSwitchType(v: unknown): v is KeyboardLog['switchType'] {
   return typeof v === 'string' && SWITCH_TYPES.includes(v as never);
@@ -107,25 +142,62 @@ export function genNewId(): string {
 
 function validateLog(raw: unknown): { valid: boolean; reason?: string } {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return { valid: false, reason: '不是有效的对象' };
+    return { valid: false, reason: '不是有效的记录对象' };
   }
 
   const obj = raw as Record<string, unknown>;
 
+  // id 单独校验：必须是非空字符串
+  if (typeof obj.id !== 'string') {
+    return { valid: false, reason: '编号 id 缺失或类型错误（必须为字符串）' };
+  }
+  if (obj.id.trim() === '') {
+    return { valid: false, reason: '编号 id 为空' };
+  }
+
+  // 其余必填字符串字段（id 已单独处理）
   for (const field of REQUIRED_STRING_FIELDS) {
+    if (field === 'id') continue;
     if (typeof obj[field] !== 'string') {
       return { valid: false, reason: `缺少或无效的字段: ${String(field)}` };
     }
   }
 
-  for (const field of REQUIRED_NUMBER_FIELDS) {
-    if (typeof obj[field] !== 'number' || isNaN(obj[field] as number)) {
-      return { valid: false, reason: `缺少或无效的字段: ${String(field)}` };
+  // 入手日期必须是真实存在的日历日期
+  if (!isValidCalendarDate(obj.purchaseDate as string)) {
+    return {
+      valid: false,
+      reason: `入手日期不存在或格式错误（应为 YYYY-MM-DD）: ${String(obj.purchaseDate)}`,
+    };
+  }
+
+  // 评分必须是 1-10 的有限数值
+  for (const field of RATING_FIELDS) {
+    const v = obj[field];
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      return {
+        valid: false,
+        reason: `${RATING_FIELD_LABELS[field as string] ?? field} 缺失或不是数字`,
+      };
+    }
+    if (v < 1 || v > 10) {
+      return {
+        valid: false,
+        reason: `${RATING_FIELD_LABELS[field as string] ?? field} 超出 1-10 范围: ${v}`,
+      };
     }
   }
 
-  if (!Array.isArray(obj.soundTags) || !obj.soundTags.every((t) => typeof t === 'string')) {
-    return { valid: false, reason: 'soundTags 必须是字符串数组' };
+  // soundTags 必须是字符串数组（元素不允许为空串以外的非字符串/嵌套结构）
+  if (!Array.isArray(obj.soundTags)) {
+    return { valid: false, reason: 'soundTags 标签结构非法：必须是字符串数组' };
+  }
+  if (
+    !obj.soundTags.every(
+      (t) => typeof t === 'string' && t.trim() !== '',
+    )
+  ) {
+    return { valid: false, reason: 'soundTags 标签结构非法：每个标签必须是非空字符串' };
   }
 
   if (!isValidSwitchType(obj.switchType)) {
@@ -150,33 +222,12 @@ function validateLog(raw: unknown): { valid: boolean; reason?: string } {
   return { valid: true };
 }
 
-export function extractLogsFromJson(rawJson: string): KeyboardLog[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawJson);
-  } catch {
-    return [];
-  }
-
-  if (Array.isArray(parsed)) {
-    return parsed.filter((item): item is KeyboardLog => validateLog(item).valid);
-  }
-
-  if (
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    'format' in parsed &&
-    (parsed as { format?: unknown }).format === EXPORT_FORMAT_MAGIC &&
-    'data' in parsed &&
-    Array.isArray((parsed as { data: unknown }).data)
-  ) {
-    return (parsed as { data: unknown[] }).data.filter((item): item is KeyboardLog => validateLog(item).valid);
-  }
-
-  return [];
-}
-
-export function parseImportData(rawJson: string, existingIds: string[]): ImportParseResult {
+/**
+ * 整份文件解析 + 全量校验。
+ * 任意一条记录非法（编号空/文件内重复、日期不存在、评分越界、标签结构非法等），
+ * 整批拒绝：fileValidLogs 为空、rejected 为 true，不允许任何记录落盘。
+ */
+export function parseImportData(rawJson: string): ImportParseResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawJson);
@@ -204,36 +255,45 @@ export function parseImportData(rawJson: string, existingIds: string[]): ImportP
     throw new Error('JSON 根节点必须是数组或有效的 KeyFeeling 导出格式');
   }
 
-  const fileValidLogs: KeyboardLog[] = [];
-  const fileInvalidItems: Array<{ index: number; reason: string; raw: unknown }> = [];
+  const fileInvalidItems: ImportRejectItem[] = [];
   const fileInternalDuplicates: Array<{ index: number; id: string; raw: unknown }> = [];
-  const seenIds = new Set<string>();
+  const validLogs: KeyboardLog[] = [];
+  const seenIds = new Map<string, number>(); // id -> 首次出现的下标
 
+  // 单轮遍历：结构/语义校验 + 文件内编号重复检测
   rawArray.forEach((item, index) => {
     const result = validateLog(item);
     if (!result.valid) {
-      fileInvalidItems.push({ index, reason: result.reason || '未知错误', raw: item });
+      const reject: ImportRejectItem = { index, reason: result.reason || '未知错误' };
+      if (
+        typeof item === 'object' &&
+        item !== null &&
+        typeof (item as Record<string, unknown>).id === 'string'
+      ) {
+        reject.id = (item as Record<string, string>).id;
+      }
+      fileInvalidItems.push(reject);
       return;
     }
 
     const log = item as KeyboardLog;
-
     if (seenIds.has(log.id)) {
       fileInternalDuplicates.push({ index, id: log.id, raw: item });
       return;
     }
-    seenIds.add(log.id);
-
-    fileValidLogs.push(log);
+    seenIds.set(log.id, index);
+    validLogs.push(log);
   });
 
-  void existingIds;
+  const rejected = fileInvalidItems.length > 0 || fileInternalDuplicates.length > 0;
 
   return {
-    fileValidLogs,
+    // 整批拒绝时不返回任何可落盘记录
+    fileValidLogs: rejected ? [] : validLogs,
     fileInvalidItems,
     fileInternalDuplicates,
     totalParsed: rawArray.length,
+    rejected,
     envelope,
   };
 }
@@ -292,6 +352,12 @@ export function applyImport(
     toAdd.push(log);
   }
 
+  // 已占用编号集合：现有 + 本次新增 + 本次已重新生成，逐条更新避免碰撞
+  const usedIds = new Set<string>([
+    ...existingLogs.map((l) => l.id),
+    ...toAdd.map((l) => l.id),
+  ]);
+
   for (const dup of selectedDup) {
     switch (strategy) {
       case 'skip':
@@ -305,14 +371,10 @@ export function applyImport(
         break;
       case 'regenerate': {
         let newId = genNewId();
-        const allIds = new Set([
-          ...existingLogs.map((l) => l.id),
-          ...toAdd.map((l) => l.id),
-          ...toRegenerate.map((l) => l.id),
-        ]);
-        while (allIds.has(newId)) {
+        while (usedIds.has(newId)) {
           newId = genNewId();
         }
+        usedIds.add(newId);
         toRegenerate.push({
           ...dup.log,
           id: newId,

@@ -238,6 +238,7 @@ export default function ImportExportModal() {
   const [parseResult, setParseResult] = useState<ImportParseResult | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [applyResult, setApplyResult] = useState<ImportApplyResult | null>(null);
+  const [applyError, setApplyError] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<DuplicateStrategy>('skip');
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -277,6 +278,7 @@ export default function ImportExportModal() {
       setParseResult(null);
       setImportError(null);
       setApplyResult(null);
+      setApplyError(null);
       setStrategy('skip');
       setCheckedIds(new Set());
       setExpandedIds(new Set());
@@ -300,6 +302,7 @@ export default function ImportExportModal() {
       setImportError(null);
       setParseResult(null);
       setApplyResult(null);
+      setApplyError(null);
       setCheckedIds(new Set());
       setExpandedIds(new Set());
 
@@ -307,12 +310,13 @@ export default function ImportExportModal() {
       reader.onload = (ev) => {
         try {
           const content = ev.target?.result as string;
-          const existingIds = logs.map((l) => l.id);
-          const result = parseImportData(content, existingIds);
+          const result = parseImportData(content);
           setParseResult(result);
 
-          const allIds = result.fileValidLogs.map((l) => l.id);
-          setCheckedIds(new Set(allIds));
+          // 仅在整份文件通过校验（未被整批拒绝）时才默认勾选、允许导入
+          if (!result.rejected) {
+            setCheckedIds(new Set(result.fileValidLogs.map((l) => l.id)));
+          }
         } catch (err) {
           setImportError(err instanceof Error ? err.message : String(err));
         }
@@ -322,11 +326,11 @@ export default function ImportExportModal() {
       };
       reader.readAsText(file);
     },
-    [logs],
+    [],
   );
 
   const handleConfirmImport = useCallback(() => {
-    if (checkedIds.size === 0 || !parseResult) return;
+    if (checkedIds.size === 0 || !parseResult || parseResult.rejected) return;
 
     const selectedIds = Array.from(checkedIds);
     const result = importLogs(
@@ -335,6 +339,12 @@ export default function ImportExportModal() {
       validated.duplicateWithExisting,
       strategy,
     );
+    if (!result.ok) {
+      // 落盘失败：内存未改动，明确显示失败，绝不显示“导入完成”
+      setApplyError(result.error ?? '写入本地存储失败');
+      return;
+    }
+    setApplyError(null);
     setApplyResult(result);
     setParseResult(null);
     if (fileInputRef.current) {
@@ -346,6 +356,7 @@ export default function ImportExportModal() {
     setParseResult(null);
     setImportError(null);
     setApplyResult(null);
+    setApplyError(null);
     setCheckedIds(new Set());
     setExpandedIds(new Set());
     if (fileInputRef.current) {
@@ -505,12 +516,36 @@ export default function ImportExportModal() {
     );
   };
 
+  const renderApplyError = () => {
+    if (!applyError) return null;
+    return (
+      <div className="rounded-xl bg-wine-500/10 border border-wine-500/40 p-5 text-center animate-fadeIn">
+        <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-wine-500/20 text-wine-400 mb-3">
+          <AlertTriangle className="h-6 w-6" />
+        </div>
+        <h3 className="font-mono text-sm font-semibold text-wine-300 mb-1">
+          导入失败，未写入任何记录
+        </h3>
+        <p className="text-xs text-wine-200/80 mb-4 break-words">{applyError}</p>
+        <div className="flex gap-2 justify-center">
+          <button onClick={resetImport} className="btn-secondary text-sm">
+            重新选择文件
+          </button>
+          <button onClick={() => setApplyError(null)} className="btn-primary text-sm">
+            返回预览
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const renderImportParseSection = () => {
     if (!parseResult) return null;
     const fileDupCount = parseResult.fileInternalDuplicates.length;
     const invalidCount = parseResult.fileInvalidItems.length;
     const existingDupCount = validated.duplicateWithExisting.length;
     const pureNewCount = validated.newLogs.length;
+    const rejected = parseResult.rejected;
 
     return (
       <div className="space-y-4 animate-fadeIn">
@@ -527,33 +562,50 @@ export default function ImportExportModal() {
           </div>
         )}
 
+        {rejected && (
+          <div className="rounded-xl border border-wine-500/50 bg-wine-500/10 p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-wine-400 shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <h4 className="text-sm font-semibold text-wine-300 mb-1">
+                  整批拒绝：文件校验未通过，未导入任何记录
+                </h4>
+                <p className="text-[11px] text-ink-400 leading-relaxed">
+                  共 {parseResult.totalParsed} 条记录，发现 {invalidCount} 条非法、
+                  {fileDupCount} 条文件内编号重复。请修正文件后重新选择；
+                  位置按文件中的顺序从 1 开始计数。
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-5 gap-2">
           <StatCard label="文件内" value={parseResult.totalParsed} />
-          <StatCard label="无效" value={invalidCount} variant="danger" />
-          <StatCard label="重复(文件内)" value={fileDupCount} variant="warning" />
-          <StatCard label="重复(现有)" value={existingDupCount} variant="warning" />
-          <StatCard label="全新" value={pureNewCount} variant="success" />
+          <StatCard label="非法" value={invalidCount} variant={invalidCount ? 'danger' : 'default'} />
+          <StatCard label="重复(文件内)" value={fileDupCount} variant={fileDupCount ? 'warning' : 'default'} />
+          <StatCard label="重复(现有)" value={rejected ? '—' : existingDupCount} variant="warning" />
+          <StatCard label="全新" value={rejected ? '—' : pureNewCount} variant="success" />
         </div>
 
         {invalidCount > 0 && (
           <div className="space-y-2">
             <h4 className="text-xs font-mono font-semibold text-wine-300 uppercase tracking-wider flex items-center gap-1.5">
               <AlertTriangle className="h-3.5 w-3.5" />
-              解析错误 ({invalidCount} 条)
+              非法记录位置 ({invalidCount} 条)
             </h4>
-            <div className="rounded-lg bg-wine-500/10 border border-wine-500/20 p-3 max-h-32 overflow-y-auto space-y-1.5 scrollbar-thin">
-              {parseResult.fileInvalidItems.slice(0, 10).map((item, i) => (
-                <div
-                  key={i}
-                  className="text-[11px] flex items-start gap-2"
-                >
-                  <span className="text-ink-600 font-mono shrink-0">#{item.index}</span>
-                  <span className="text-wine-300">{item.reason}</span>
+            <div className="rounded-lg bg-wine-500/10 border border-wine-500/20 p-3 max-h-40 overflow-y-auto space-y-1.5 scrollbar-thin">
+              {parseResult.fileInvalidItems.slice(0, 20).map((item, i) => (
+                <div key={i} className="text-[11px] flex items-start gap-2">
+                  <span className="text-wine-400/80 font-mono shrink-0">
+                    第 {item.index + 1} 条
+                  </span>
+                  <span className="text-wine-200 break-words">{item.reason}</span>
                 </div>
               ))}
-              {invalidCount > 10 && (
+              {invalidCount > 20 && (
                 <div className="text-[11px] text-ink-500 pt-1 border-t border-ink-700/40">
-                  ...还有 {invalidCount - 10} 条错误
+                  ...还有 {invalidCount - 20} 条错误
                 </div>
               )}
             </div>
@@ -564,28 +616,38 @@ export default function ImportExportModal() {
           <div className="space-y-2">
             <h4 className="text-xs font-mono font-semibold text-brass-300 uppercase tracking-wider flex items-center gap-1.5">
               <Copy className="h-3.5 w-3.5" />
-              文件内重复 ID ({fileDupCount} 条，已自动去除)
+              文件内编号重复 ({fileDupCount} 条，导致整批拒绝)
             </h4>
-            <div className="rounded-lg bg-brass-300/5 border border-brass-300/20 p-3 max-h-24 overflow-y-auto space-y-1 scrollbar-thin">
-              {parseResult.fileInternalDuplicates.slice(0, 5).map((item, i) => (
-                <div
-                  key={i}
-                  className="text-[11px] flex items-start gap-2"
-                >
-                  <span className="text-ink-600 font-mono shrink-0">#{item.index}</span>
-                  <span className="text-brass-200 font-mono break-all">{item.id}</span>
+            <div className="rounded-lg bg-brass-300/5 border border-brass-300/20 p-3 max-h-32 overflow-y-auto space-y-1 scrollbar-thin">
+              {parseResult.fileInternalDuplicates.slice(0, 10).map((item, i) => (
+                <div key={i} className="text-[11px] flex items-start gap-2">
+                  <span className="text-brass-300/80 font-mono shrink-0">
+                    第 {item.index + 1} 条
+                  </span>
+                  <span className="text-brass-200 font-mono break-all">
+                    编号重复: {item.id}
+                  </span>
                 </div>
               ))}
-              {fileDupCount > 5 && (
+              {fileDupCount > 10 && (
                 <div className="text-[11px] text-ink-500 pt-1 border-t border-ink-700/40">
-                  ...还有 {fileDupCount - 5} 条重复
+                  ...还有 {fileDupCount - 10} 条重复
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {totalValidForDisplay > 0 && (
+        {rejected && (
+          <div className="flex gap-2">
+            <button onClick={resetImport} className="flex-1 btn-primary justify-center">
+              <Upload className="h-4 w-4" />
+              重新选择文件
+            </button>
+          </div>
+        )}
+
+        {!rejected && totalValidForDisplay > 0 && (
           <>
             <div className="divider" />
 
@@ -702,7 +764,7 @@ export default function ImportExportModal() {
             </div>
 
             <p className="text-[11px] text-ink-500 text-center leading-relaxed">
-              勾选要导入的记录，确认后写入本地存储。重复 ID 可根据策略处理：
+              勾选要导入的记录，确认后先整体校验通过才写入本地存储。重复 ID 可根据策略处理：
               {existingDupCount > 0 && (
                 <>
                   <br />
@@ -715,12 +777,12 @@ export default function ImportExportModal() {
           </>
         )}
 
-        {totalValidForDisplay === 0 && invalidCount > 0 && (
-          <div className="rounded-lg bg-wine-500/10 border border-wine-500/30 p-4 text-center">
-            <AlertTriangle className="h-8 w-8 text-wine-400 mx-auto mb-2" />
-            <p className="text-xs font-semibold text-wine-300 mb-1">无有效记录</p>
-            <p className="text-[11px] text-ink-400">
-              文件中没有可以导入的有效记录，请检查文件格式
+        {!rejected && totalValidForDisplay === 0 && (
+          <div className="rounded-lg bg-ink-900/60 border border-ink-700/50 p-4 text-center">
+            <FileJson className="h-8 w-8 text-ink-500 mx-auto mb-2" />
+            <p className="text-xs font-semibold text-ink-300 mb-1">文件中没有记录</p>
+            <p className="text-[11px] text-ink-500">
+              空数组合法但没有可导入的内容
             </p>
           </div>
         )}
@@ -783,6 +845,8 @@ export default function ImportExportModal() {
             <div className="space-y-4 animate-fadeIn">
               {applyResult ? (
                 renderResultSection()
+              ) : applyError ? (
+                renderApplyError()
               ) : (
                 <>
                   <div className="rounded-xl border border-dashed border-ink-600 bg-ink-900/40 p-6 text-center hover:border-brass-300/40 hover:bg-brass-300/5 transition-colors">
