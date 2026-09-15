@@ -99,8 +99,9 @@ const RATING_FIELD_LABELS: Record<string, string> = {
 /**
  * 校验 YYYY-MM-DD 是否为真实存在的日历日期（拒绝 2025-02-31、2025-13-01 等）。
  * 回读后必须与输入完全一致，避免 Date 自动滚动到下一个月。
+ * 同时用于导入严格校验与本地加载校验。
  */
-function isValidCalendarDate(v: string): boolean {
+export function isValidCalendarDate(v: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
   const [y, m, d] = v.split('-').map(Number);
   if (m < 1 || m > 12 || d < 1) return false;

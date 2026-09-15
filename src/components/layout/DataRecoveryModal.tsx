@@ -22,6 +22,7 @@ const RAW_PREVIEW_LIMIT = 4000;
 export default function DataRecoveryModal() {
   const loadState = useAppStore((s) => s.loadState);
   const loadError = useAppStore((s) => s.loadError);
+  const loadIssues = useAppStore((s) => s.loadIssues);
   const corruptedRaw = useAppStore((s) => s.corruptedRaw);
   const retryLoad = useAppStore((s) => s.retryLoad);
   const exportCorruptedRaw = useAppStore((s) => s.exportCorruptedRaw);
@@ -99,11 +100,32 @@ export default function DataRecoveryModal() {
           <div className="rounded-lg border border-wine-500/30 bg-wine-500/5 p-3.5">
             <div className="flex items-center gap-2 mb-1.5">
               <AlertOctagon className="h-4 w-4 text-wine-400 shrink-0" />
-              <span className="text-xs font-mono font-semibold text-wine-300">失败原因</span>
+              <span className="text-xs font-mono font-semibold text-wine-300">
+                {loadIssues.length > 0 ? `发现 ${loadIssues.length} 处字段问题` : '失败原因'}
+              </span>
             </div>
-            <p className="text-xs text-wine-100/80 leading-relaxed break-words">
-              {loadError ?? '未知错误'}
-            </p>
+            {loadIssues.length > 0 ? (
+              <div className="max-h-40 overflow-y-auto scrollbar-thin space-y-1 pr-1">
+                {loadIssues.slice(0, 50).map((iss, i) => (
+                  <div key={i} className="text-[11px] leading-relaxed flex items-start gap-1.5">
+                    <span className="font-mono text-wine-400/80 shrink-0">
+                      第 {iss.index + 1} 条
+                    </span>
+                    <span className="text-wine-200/90 font-medium shrink-0">{iss.field}</span>
+                    <span className="text-wine-100/70 break-words">— {iss.reason}</span>
+                  </div>
+                ))}
+                {loadIssues.length > 50 && (
+                  <div className="text-[11px] text-ink-500 pt-1 border-t border-wine-500/20">
+                    …还有 {loadIssues.length - 50} 处问题
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-wine-100/80 leading-relaxed whitespace-pre-wrap break-words">
+                {loadError ?? '未知错误'}
+              </p>
+            )}
           </div>
 
           {/* 原始内容预览 */}

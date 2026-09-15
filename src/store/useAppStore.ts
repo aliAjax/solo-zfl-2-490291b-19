@@ -3,6 +3,11 @@ import type { KeyboardLog, FilterState, UIState, ViewMode } from '@/types';
 import { sampleData } from '@/data/sampleData';
 import type { ImportApplyResult, ValidatedLog } from '@/utils/importExport';
 import { applyImport, genNewId, downloadJsonFile } from '@/utils/importExport';
+import {
+  validateAndMigrateLocalLogs,
+  formatLocalIssues,
+  type LocalLogIssue,
+} from '@/utils/localData';
 
 const STORAGE_KEY = 'keyfeeling-logs-v1';
 
@@ -23,17 +28,8 @@ export interface InitialLoad {
   raw: string | null;
   /** 失败原因（损坏/异常时） */
   error: string | null;
-}
-
-/** 仅做防止崩溃的最小结构校验；导入文件的严格校验仍由 importExport 负责。 */
-function isUsableLog(x: unknown): boolean {
-  if (typeof x !== 'object' || x === null) return false;
-  const o = x as Record<string, unknown>;
-  if (typeof o.id !== 'string' || o.id.trim() === '') return false;
-  if (typeof o.name !== 'string') return false;
-  if (typeof o.overallRating !== 'number' || !Number.isFinite(o.overallRating)) return false;
-  if (!Array.isArray(o.soundTags) || !o.soundTags.every((t) => typeof t === 'string')) return false;
-  return true;
+  /** 逐条字段级问题（结构残缺时） */
+  issues: LocalLogIssue[];
 }
 
 function performInitialLoad(): InitialLoad {
@@ -49,12 +45,13 @@ function performInitialLoad(): InitialLoad {
       error:
         '无法读取本地存储（可能处于隐私模式或浏览器禁用了存储）：' +
         (e instanceof Error ? e.message : String(e)),
+      issues: [],
     };
   }
 
   // 2) 从未访问：展示示例数据，但不写盘、不冒充已保存数据
   if (raw === null) {
-    return { state: 'first-visit', logs: sampleData, raw: null, error: null };
+    return { state: 'first-visit', logs: sampleData, raw: null, error: null, issues: [] };
   }
 
   // 3) 解析失败：保留原始损坏内容
@@ -67,34 +64,41 @@ function performInitialLoad(): InitialLoad {
       logs: [],
       raw,
       error: '本地数据不是合法 JSON，解析失败：' + (e instanceof Error ? e.message : String(e)),
+      issues: [],
     };
   }
 
   // 4) 已持久化的空列表：必须与首次访问区分，刷新保持空
   if (Array.isArray(parsed) && parsed.length === 0) {
-    return { state: 'empty', logs: [], raw, error: null };
+    return { state: 'empty', logs: [], raw, error: null, issues: [] };
   }
 
-  // 5) 结构必须是记录数组且每条通过最小校验
+  // 5) 根必须是记录数组
   if (!Array.isArray(parsed)) {
     return {
       state: 'corrupt',
       logs: [],
       raw,
       error: `本地数据结构非法：期望记录数组，实际为 ${parsed === null ? 'null' : typeof parsed}`,
+      issues: [],
     };
   }
-  const badIndex = parsed.findIndex((x) => !isUsableLog(x));
-  if (badIndex >= 0) {
+
+  // 6) 逐条严格校验 + 旧版可选字段迁移；任意一条残缺即整体进入恢复流程
+  const result = validateAndMigrateLocalLogs(parsed);
+  if (!result.ok) {
     return {
       state: 'corrupt',
       logs: [],
       raw,
-      error: `本地数据第 ${badIndex + 1} 条记录结构损坏（缺少编号/名称，或评分、标签字段非法）`,
+      error:
+        `本地数据有 ${result.issues.length} 处结构问题，已阻止其作为正常记录显示：\n` +
+        formatLocalIssues(result.issues),
+      issues: result.issues,
     };
   }
 
-  return { state: 'ready', logs: parsed as KeyboardLog[], raw, error: null };
+  return { state: 'ready', logs: result.logs, raw, error: null, issues: [] };
 }
 
 /** 供“重试”复用：重新读取并判定。 */
@@ -182,6 +186,8 @@ interface AppState {
   corruptedRaw: string | null;
   /** 读取失败原因（corrupt/error） */
   loadError: string | null;
+  /** 结构残缺时的逐条字段级问题列表 */
+  loadIssues: LocalLogIssue[];
   /** 最近一次持久化失败信息，用于界面明确提示；成功后置空 */
   storageError: string | null;
   /** 重新读取本地存储；成功恢复原列表，失败保持恢复弹窗 */
@@ -238,6 +244,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadState: initialLoad.state,
   corruptedRaw: initialLoad.raw,
   loadError: initialLoad.error,
+  loadIssues: initialLoad.issues,
   storageError: null,
 
   dismissStorageError: () => set({ storageError: null }),
@@ -246,7 +253,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const r = retryLoadFromStorage();
     if (r.state === 'corrupt' || r.state === 'error') {
       // 重试仍失败：保留现状（含原始损坏内容），恢复窗口不关闭
-      set({ loadState: r.state, logs: r.logs, corruptedRaw: r.raw, loadError: r.error });
+      set({
+        loadState: r.state,
+        logs: r.logs,
+        corruptedRaw: r.raw,
+        loadError: r.error,
+        loadIssues: r.issues,
+      });
       return { ok: false, error: r.error ?? '读取仍然失败' };
     }
     // 重试成功：恢复读到的原列表（或首次访问示例 / 空列表）
@@ -255,6 +268,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       logs: r.logs,
       corruptedRaw: null,
       loadError: null,
+      loadIssues: [],
       storageError: null,
       ui: { ...defaultUI },
     });
@@ -290,6 +304,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       loadState: 'empty',
       corruptedRaw: null,
       loadError: null,
+      loadIssues: [],
       storageError: null,
       ui: { ...defaultUI },
     });
