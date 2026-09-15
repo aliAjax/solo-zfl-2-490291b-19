@@ -1,16 +1,33 @@
 import FilterBar from './FilterBar';
 import KeyboardCard from './KeyboardCard';
 import { useFilteredLogs, useAppStore } from '@/store/useAppStore';
-import { FolderOpen, Plus } from 'lucide-react';
+import { FolderOpen, Plus, Sparkles, Info } from 'lucide-react';
 
 export default function ListView() {
   const logs = useFilteredLogs();
-  const { openFormModal, ui } = useAppStore();
+  const { openFormModal, ui, loadState } = useAppStore();
   const totalLogs = useAppStore((s) => s.logs.length);
+  const isFirstVisit = loadState === 'first-visit';
+  const isPersistedEmpty = loadState === 'empty' && totalLogs === 0;
 
   return (
     <div className="space-y-5">
       <FilterBar />
+
+      {isFirstVisit && (
+        <div className="flex items-start gap-3 rounded-xl border border-brass-300/30 bg-brass-300/5 px-4 py-3">
+          <Sparkles className="h-4 w-4 text-brass-200 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold text-brass-100">
+              当前为内置示例数据，尚未保存到本地
+            </p>
+            <p className="text-[11px] text-ink-400 mt-0.5 leading-relaxed">
+              这些示例仅用于预览功能，并不是你已保存的记录。新建、导入或删除任意记录后，才会在本地存储建立属于你的数据文件；清空全部后刷新将保持空列表，示例不会再次出现。
+            </p>
+          </div>
+          <Info className="h-3.5 w-3.5 text-brass-300/50 shrink-0 mt-0.5" />
+        </div>
+      )}
 
       <div className="flex items-center justify-between px-1">
         <p className="text-xs font-mono text-ink-500">
@@ -33,10 +50,12 @@ export default function ListView() {
             <FolderOpen className="h-6 w-6" />
           </div>
           <h3 className="font-mono text-base font-semibold text-ink-200 mb-2">
-            没有找到匹配的记录
+            {isPersistedEmpty ? '还没有任何记录' : '没有找到匹配的记录'}
           </h3>
           <p className="text-sm text-ink-500 mb-6 max-w-sm">
-            尝试调整筛选条件，或者创建你的第一条键盘手感日志吧～
+            {isPersistedEmpty
+              ? '本地数据是已保存的空列表，刷新后仍会保持为空。创建第一条键盘手感日志吧～'
+              : '尝试调整筛选条件，或者创建你的第一条键盘手感日志吧～'}
           </p>
           <button onClick={() => openFormModal()} className="btn-primary">
             <Plus className="h-4 w-4" />
